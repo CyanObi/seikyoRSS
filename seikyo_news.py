@@ -9,7 +9,7 @@ from feedgen.feed import FeedGenerator
 USER_ID = "cyanobi.2.29@gmail.com"
 PASSWORD = "B0eceJ*kz%"
 
-# カテゴリとURLの定義（おびさん提供リスト）
+# カテゴリとURLの定義
 CATEGORIES = {
     "報道・連載": "https://www.seikyoonline.com/news/",
     "池田大作先生": "https://www.seikyoonline.com/president/",
@@ -32,21 +32,23 @@ async def scrape_category(page, category_name, url, fg):
     """
     print(f"📂 [巡回] {category_name} にアクセス中...")
     try:
+        # ネットワークが落ち着くまで待機
         await page.goto(url, wait_until="networkidle", timeout=30000)
         
-        # 記事ブロックを取得
+        # 遅延読み込み画像（Lazy Load）を反映させるため、少し下にスクロール
+        await page.evaluate("window.scrollBy(0, 500)")
+        await asyncio.sleep(1) 
+
         blocks = await page.query_selector_all("div.p2o_text, div.p2o_text_photo, div.news_list_block, div.daibyakurenge_list_block, .article-item")
         
         local_count = 0
         for block in blocks:
-            # 1. 記事リンクの取得
+            # 1. 記事リンク
             link_el = await block.query_selector("a[href*='article']")
-            if not link_el:
-                continue
-            
+            if not link_el: continue
             raw_href = await link_el.get_attribute("href")
             
-            # 2. 日付の確認
+            # 2. 日付チェック
             date_el = await block.query_selector(".ts_days, .date")
             if date_el:
                 date_text = await date_el.inner_text()
@@ -54,48 +56,51 @@ async def scrape_category(page, category_name, url, fg):
                 full_text = await block.inner_text()
                 if TARGET_DATE in full_text:
                     date_text = TARGET_DATE
-                else:
-                    continue
+                else: continue
 
-            if TARGET_DATE not in date_text:
-                continue
+            if TARGET_DATE not in date_text: continue
 
-            # 3. タイトルの取得
+            # 3. タイトル
             title_el = await block.query_selector(".under, h3, .shosai-title, .title")
             title = await title_el.inner_text() if title_el else "タイトル不明"
 
-            # 4. 画像の取得 (追加)
+            # 4. 画像URLの取得（Lazy Load対策）
             img_el = await block.query_selector("img")
             img_url = None
             if img_el:
-                img_src = await img_el.get_attribute("src")
-                if img_src:
-                    # URLの完全化
-                    img_url = f"https:{img_src}" if img_src.startswith("//") else img_src
-                    if not img_url.startswith("http"):
-                        img_url = f"https://www.seikyoonline.com{img_src}"
+                # data-src属性（本物のURL）を優先し、なければsrcを見る
+                # "new"ロゴを避けるため、srcの中身をチェック
+                for attr in ["data-src", "src", "data-original"]:
+                    val = await img_el.get_attribute(attr)
+                    if val and "new" not in val.lower() and "common" not in val.lower():
+                        img_url = val
+                        break
+                
+                if img_url:
+                    # URLの完全化（//始まりや/始まりを補完）
+                    if img_url.startswith("//"):
+                        img_url = f"https:{img_url}"
+                    elif img_url.startswith("/"):
+                        img_url = f"https://www.seikyoonline.com{img_url}"
 
-            # URLの完全化
+            # 記事URLの完全化
             full_url = f"https:{raw_href}" if raw_href.startswith("//") else raw_href
             if not full_url.startswith("http"):
                 full_url = f"https://www.seikyoonline.com{raw_href}"
 
-            # RSSエントリ作成
+            # 5. RSSエントリ作成
             fe = fg.add_entry()
             fe.title(f"[{category_name}] {title.strip()}")
             fe.link(href=full_url)
+            fe.id(full_url)
             
-            # 説明文に画像を含める（Feedlyなどでの表示を確実にするため）
-            desc = f"カテゴリ: {category_name} / 公開日: {date_text.strip()}"
+            # Feedly表示用に画像をDescriptionにHTML埋め込み
+            desc_text = f"カテゴリ: {category_name} / 公開日: {date_text.strip()}"
             if img_url:
-                # HTMLとして画像を差し込む
-                fe.description(f'<img src="{img_url}" style="margin-bottom:10px;"><br>{desc}')
-                # RSSの標準タグとしても追加（MIMEタイプは画像として一般的、サイズは0でOK）
+                fe.description(f'<img src="{img_url}" style="max-width:100%;"><br>{desc_text}')
                 fe.enclosure(img_url, 0, 'image/jpeg')
             else:
-                fe.description(desc)
-
-            fe.id(full_url)
+                fe.description(desc_text)
             
             local_count += 1
             print(f"  [+] {title.strip()[:30]}...")
@@ -117,44 +122,37 @@ async def main():
         page = await context.new_page()
 
         try:
-            # --- ログインフェーズ ---
             print(f"🔑 [2/5] ログイン実行中...")
             await page.goto("https://www.seikyoonline.com/auth/login", wait_until="networkidle")
             await page.fill("input[placeholder*='SOKA ID']", USER_ID)
             await page.fill("input[placeholder*='パスワード']", PASSWORD)
             await page.click("button:has-text('ログイン')")
             await page.wait_for_load_state("networkidle")
-            print("✅ ログイン成功。")
-
-            # --- RSSフィードの初期化 ---
+            
             fg = FeedGenerator()
-            fg.title(f"聖教新聞 本日の総合ニュース ({TARGET_DATE})")
+            fg.title(f"聖教新聞 本日のニュース ({TARGET_DATE})")
             fg.link(href="https://www.seikyoonline.com/")
-            fg.description(f"{TARGET_DATE} の各カテゴリ更新情報")
+            fg.description(f"{TARGET_DATE} 総合RSSフィード")
 
-            # --- 全カテゴリ巡回フェーズ ---
-            print(f"🔄 [3/5] 全カテゴリを巡回して記事を収集します（ターゲット: {TARGET_DATE}）")
+            print(f"🔄 [3/5] カテゴリ巡回（ターゲット: {TARGET_DATE}）")
             total_count = 0
             for name, url in CATEGORIES.items():
                 count = await scrape_category(page, name, url, fg)
                 total_count += count
 
-            print(f"\n📊 [4/5] 収集結果: 合計 {total_count} 件の記事を取得しました。")
+            print(f"\n📊 [4/5] 収集完了: {total_count} 件")
 
-            # --- 保存フェーズ ---
             if total_count > 0:
-                print(f"💾 [5/5] RSSファイル保存中...")
-                output_file = 'seikyo_news.xml'
-                fg.rss_file(output_file)
-                print(f"✨ 完了: {os.getcwd()}/{output_file}")
+                print(f"💾 [5/5] RSS保存...")
+                fg.rss_file('seikyo_news.xml')
+                print(f"✨ 完了: {os.getcwd()}/seikyo_news.xml")
             else:
-                print("⚠️ 本日の記事が1件も見つからなかったため、RSSは更新しません。")
+                print("⚠️ 本日の記事がないため更新スキップ。")
 
         except Exception as e:
-            print(f"❌ 致命的なエラー: {e}")
+            print(f"❌ エラー: {e}")
         finally:
             await browser.close()
-            print("🔌 ブラウザ終了。\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
