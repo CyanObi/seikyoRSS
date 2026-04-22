@@ -21,4 +21,4 @@ git push origin main >> /home/yoshikazu-obikawa/dev/seikyoRSS/rss_log.txt 2>&1
 echo "--- RSS Update End: $(date) ---" >> /home/yoshikazu-obikawa/dev/seikyoRSS/rss_log.txt
 
 # 6. 安全なシャットダウン（SwitchBotが切れる前に自分から寝る）
-sudo shutdown -h now
+# sudo shutdown -h now
