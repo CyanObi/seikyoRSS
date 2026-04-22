@@ -358,3 +358,13 @@ fatal: could not read Username for 'https://github.com': そのようなデバ�
 Call log:
   - navigating to "https://www.seikyoonline.com/auth/login", waiting until "networkidle"
 
+fatal: unable to access 'https://github.com/CyanObi/seikyoRSS.git/': Could not resolve host: github.com
+--- RSS Update End: 2026年  4月 23日 木曜日 06:35:23 JST ---
+--- RSS Update Start: 2026年  4月 23日 木曜日 06:35:15 JST ---
+
+🚀 [1/5] ブラウザ起動...
+🔑 [2/5] ログイン実行中...
+❌ エラー: Page.goto: net::ERR_NAME_NOT_RESOLVED at https://www.seikyoonline.com/auth/login
+Call log:
+  - navigating to "https://www.seikyoonline.com/auth/login", waiting until "networkidle"
+
