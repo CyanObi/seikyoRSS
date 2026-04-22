@@ -34,8 +34,7 @@ async def scrape_category(page, category_name, url, fg):
     try:
         await page.goto(url, wait_until="networkidle", timeout=30000)
         
-        # 記事ブロック(p2o_text系)をすべて取得
-        # 大白蓮華など構造が違う可能性があるため、広範なセレクタを設定
+        # 記事ブロックを取得
         blocks = await page.query_selector_all("div.p2o_text, div.p2o_text_photo, div.news_list_block, div.daibyakurenge_list_block, .article-item")
         
         local_count = 0
@@ -65,17 +64,37 @@ async def scrape_category(page, category_name, url, fg):
             title_el = await block.query_selector(".under, h3, .shosai-title, .title")
             title = await title_el.inner_text() if title_el else "タイトル不明"
 
+            # 4. 画像の取得 (追加)
+            img_el = await block.query_selector("img")
+            img_url = None
+            if img_el:
+                img_src = await img_el.get_attribute("src")
+                if img_src:
+                    # URLの完全化
+                    img_url = f"https:{img_src}" if img_src.startswith("//") else img_src
+                    if not img_url.startswith("http"):
+                        img_url = f"https://www.seikyoonline.com{img_src}"
+
             # URLの完全化
             full_url = f"https:{raw_href}" if raw_href.startswith("//") else raw_href
             if not full_url.startswith("http"):
                 full_url = f"https://www.seikyoonline.com{raw_href}"
 
-            # 重複登録の防止 (URLをIDとしてチェック)
-            # 複数のカテゴリに同じ記事がある場合があるため
+            # RSSエントリ作成
             fe = fg.add_entry()
             fe.title(f"[{category_name}] {title.strip()}")
             fe.link(href=full_url)
-            fe.description(f"カテゴリ: {category_name} / 公開日: {date_text.strip()}")
+            
+            # 説明文に画像を含める（Feedlyなどでの表示を確実にするため）
+            desc = f"カテゴリ: {category_name} / 公開日: {date_text.strip()}"
+            if img_url:
+                # HTMLとして画像を差し込む
+                fe.description(f'<img src="{img_url}" style="margin-bottom:10px;"><br>{desc}')
+                # RSSの標準タグとしても追加（MIMEタイプは画像として一般的、サイズは0でOK）
+                fe.enclosure(img_url, 0, 'image/jpeg')
+            else:
+                fe.description(desc)
+
             fe.id(full_url)
             
             local_count += 1
