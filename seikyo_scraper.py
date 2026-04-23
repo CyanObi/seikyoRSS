@@ -11,7 +11,8 @@ USER_ID = "cyanobi.2.29@gmail.com"
 PASSWORD = "B0eceJ*kz%"
 # GitHub PagesのベースURL（画像をここから配信する）
 GITHUB_BASE_URL = "https://cyanobi.github.io/seikyoRSS/"
-IMAGE_DIR = "images"
+BASE_PATH = "/home/yoshikazu-obikawa/dev/seikyoRSS"
+IMAGE_DIR = os.path.join(BASE_PATH, "images")
 
 CATEGORIES = {
     "報道・連載": "https://www.seikyoonline.com/news/",
