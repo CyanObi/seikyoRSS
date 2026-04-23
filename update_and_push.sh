@@ -1,24 +1,18 @@
 #!/bin/bash
+# update_and_push.sh
 
-# 1. ログの記録（デバッグ用）
-echo "--- RSS Update Start: $(date) ---" >> /home/yoshikazu-obikawa/dev/seikyoRSS/rss_log.txt
-
-# 2. ディレクトリへ移動
 cd /home/yoshikazu-obikawa/dev/seikyoRSS
-
-# 3. 仮想環境を有効化してPython実行
-# 画像取得機能が入った「完全版」を動かします
 source .venv/bin/activate
-python seikyo_news.py >> /home/yoshikazu-obikawa/dev/seikyoRSS/rss_log.txt 2>&1
-deactivate
 
-# 4. GitでGitHubへ送信
+# 1. スクレイピング実行
+python3 seikyo_scraper.py
+
+# 2. GitHubへ送信
 git add .
-git commit -m "auto-update: RSS with images $(date +'%Y-%m-%d %H:%M')"
-git push origin main >> /home/yoshikazu-obikawa/dev/seikyoRSS/rss_log.txt 2>&1
-
-# 5. 終了ログ
-echo "--- RSS Update End: $(date) ---" >> /home/yoshikazu-obikawa/dev/seikyoRSS/rss_log.txt
-
-# 6. 安全なシャットダウン（SwitchBotが切れる前に自分から寝る）
-# sudo shutdown -h now
+git commit -m "Auto update: $(date +'%Y-%m-%d %H:%M')"
+if git push origin main; then
+    echo "成功: 1分後にシャットダウンします。"
+    sudo shutdown -h +1
+else
+    echo "失敗: 調査のため起動を継続します。"
+fi
