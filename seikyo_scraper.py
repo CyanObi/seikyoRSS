@@ -5,7 +5,7 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 from feedgen.feed import FeedGenerator
 
-# --- パス設定（絶対パスで固定） ---
+# --- 【パス設定】絶対パスで固定 ---
 BASE_DIR = "/home/yoshikazu-obikawa/dev/seikyoRSS"
 IMAGE_DIR = os.path.join(BASE_DIR, "images")
 RSS_FILE = os.path.join(BASE_DIR, "seikyo_news.xml")
@@ -33,13 +33,14 @@ TARGET_DATE = f"{now.year}年{now.month}月{now.day}日"
 async def scrape_category(page, category_name, url, fg):
     print(f"📂 [巡回] {category_name} にアクセス中...")
     try:
-        await page.goto(url, wait_until="networkidle", timeout=30000)
-        # 画像の遅延読み込み対策
+        await page.goto(url, wait_until="networkidle", timeout=45000)
+        # 画像読み込みのため少しスクロール
         await page.evaluate("window.scrollBy(0, 1000)")
-        await asyncio.sleep(2) 
+        await asyncio.sleep(3) 
 
-        blocks = await page.query_selector_all("div.p2o_text, div.p2o_text_photo, div.news_list_block, div.daibyakurenge_list_block, .article-item")
-        
+        # 取得対象のセレクタを広めに設定
+        blocks = await page.query_selector_all("div.p2o_text, div.p2o_text_photo, div.news_list_block, div.daibyakurenge_list_block, .article-item, .list_item")
+
         local_count = 0
         for block in blocks:
             link_el = await block.query_selector("a[href*='article']")
@@ -53,7 +54,6 @@ async def scrape_category(page, category_name, url, fg):
             title_el = await block.query_selector(".under, h3, .shosai-title, .title")
             title = await title_el.inner_text() if title_el else "タイトル不明"
 
-            # 画像URLの取得と保存
             img_el = await block.query_selector("img")
             final_img_url = None
             
@@ -61,7 +61,7 @@ async def scrape_category(page, category_name, url, fg):
                 src_url = None
                 for attr in ["data-src", "src", "data-original"]:
                     val = await img_el.get_attribute(attr)
-                    if val and all(x not in val.lower() for x in ["new", "common", "spacer"]):
+                    if val and all(x not in val.lower() for x in ["new", "common", "spacer", "logo"]):
                         src_url = val
                         break
                 
@@ -72,19 +72,15 @@ async def scrape_category(page, category_name, url, fg):
                     try:
                         img_name = src_url.split("/")[-1].split("?")[0]
                         if not img_name.endswith((".jpg", ".png", ".jpeg")): img_name += ".jpg"
-                        
                         img_path = os.path.join(IMAGE_DIR, img_name)
                         
-                        # 画像ダウンロード実行
                         img_res = await page.request.get(src_url)
                         if img_res.status == 200:
                             with open(img_path, "wb") as f:
                                 f.write(await img_res.body())
-                            if os.path.getsize(img_path) > 0:
-                                # GitHub Pages経由のURLを生成
+                            if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
                                 final_img_url = f"{GITHUB_BASE_URL}images/{img_name}"
-                    except Exception as e:
-                        print(f"    ⚠️ 画像保存失敗: {e}")
+                    except: pass
 
             full_url = f"https:{raw_href}" if raw_href.startswith("//") else raw_href
             if not full_url.startswith("http"): full_url = f"https://www.seikyoonline.com{raw_href}"
@@ -102,7 +98,7 @@ async def scrape_category(page, category_name, url, fg):
                 fe.description(desc_text)
             
             local_count += 1
-            print(f"  [+] {title.strip()[:20]}... {'(画像あり)' if final_img_url else '(画像なし)'}")
+            print(f"  [+] {title.strip()[:15]}... {'📸' if final_img_url else '📄'}")
 
         return local_count
     except Exception as e:
@@ -110,7 +106,6 @@ async def scrape_category(page, category_name, url, fg):
         return 0
 
 async def main():
-    # 画像ディレクトリの初期化
     if os.path.exists(IMAGE_DIR):
         shutil.rmtree(IMAGE_DIR)
     os.makedirs(IMAGE_DIR, exist_ok=True)
@@ -118,23 +113,32 @@ async def main():
     async with async_playwright() as p:
         print(f"\n🚀 [1/5] ブラウザ起動...")
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(viewport={'width': 1280, 'height': 1200})
+        # 言語とエージェントを設定
+        context = await browser.new_context(
+            viewport={'width': 1280, 'height': 1200},
+            locale="ja-JP",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        # ★ここが抜けていました！
         page = await context.new_page()
 
         try:
-            print(f"🔑 [2/5] ログイン...")
-            await page.goto("https://www.seikyoonline.com/auth/login")
+            print(f"🔑 [2/5] ログイン実行中...")
+            await page.goto("https://www.seikyoonline.com/auth/login", wait_until="networkidle")
             await page.fill("input[placeholder*='SOKA ID']", USER_ID)
             await page.fill("input[placeholder*='パスワード']", PASSWORD)
             await page.click("button:has-text('ログイン')")
+            
+            # ログイン処理の完了をじっくり待つ
             await page.wait_for_load_state("networkidle")
+            await asyncio.sleep(5) 
             
             fg = FeedGenerator()
             fg.title(f"聖教新聞 本日のニュース ({TARGET_DATE})")
             fg.link(href=GITHUB_BASE_URL)
             fg.description(f"{TARGET_DATE} 総合RSSフィード")
 
-            print(f"🔄 [3/5] カテゴリ巡回")
+            print(f"🔄 [3/5] カテゴリ巡回（ターゲット: {TARGET_DATE}）")
             total_count = 0
             for name, url in CATEGORIES.items():
                 total_count += await scrape_category(page, name, url, fg)
@@ -144,10 +148,12 @@ async def main():
             if total_count > 0:
                 print(f"💾 [5/5] RSS保存...")
                 fg.rss_file(RSS_FILE)
-                print(f"✨ 完了: images/ に画像が保存され、{RSS_FILE} を更新しました。")
+                print(f"✨ 完了: images/ と {RSS_FILE} を更新しました。")
             else:
-                print("⚠️ 記事なし。")
+                print("⚠️ 本日の記事がないため更新スキップ。")
 
+        except Exception as e:
+            print(f"❌ エラー: {e}")
         finally:
             await browser.close()
 
