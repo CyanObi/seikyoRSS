@@ -129,14 +129,25 @@ async def main():
             await page.fill("input[placeholder*='パスワード']", PASSWORD)
             await page.click("button:has-text('ログイン')")
             
-            # ログイン処理の完了をじっくり待つ
+	    # --- ここから修正・強化 ---
+            print("⏳ ログイン処理完了を待機中...")
+            # 1. ネットワークが静かになるまで待つ
             await page.wait_for_load_state("networkidle")
+            # 2. 念のため、ログイン後のトップページにある特定の要素が出るまで待つ
+            # （例: ログアウトボタンや、ユーザー名が表示される場所など）
             await asyncio.sleep(5) 
             
+            # ログインが成功したか、スクリーンショットを撮って確認する（デバッグ用）
+            # await page.screenshot(path="debug_after_login.png")
+            # --- ここまで ---
+            
             fg = FeedGenerator()
-            fg.title(f"聖教新聞 本日のニュース ({TARGET_DATE})")
-            fg.link(href=GITHUB_BASE_URL)
+            fg.title(f"聖教新聞 本日のニュース")
+            # GitHubではなく、FunnelのURLにする（もしFunnelが開通していれば）
+            fg.link(href="https://[おびさんのFunnelドメイン]/")
             fg.description(f"{TARGET_DATE} 総合RSSフィード")
+            # 言語設定を追加（Feedlyが解析しやすくなります）
+            fg.language('ja')
 
             print(f"🔄 [3/5] カテゴリ巡回（ターゲット: {TARGET_DATE}）")
             total_count = 0
