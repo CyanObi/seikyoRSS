@@ -1,3 +1,7 @@
+import requests
+from bs4 import BeautifulSoup
+import json
+import datetime
 import asyncio
 import os
 import shutil
@@ -8,7 +12,9 @@ from feedgen.feed import FeedGenerator
 # --- 【パス設定】絶対パスで固定 ---
 BASE_DIR = "/home/yoshikazu-obikawa/dev/seikyoRSS"
 IMAGE_DIR = os.path.join(BASE_DIR, "images")
+INGEST_DIR = os.path.join(BASE_DIR, "ingest") # LLMインジェスト用フォルダ
 RSS_FILE = os.path.join(BASE_DIR, "seikyo_news.xml")
+JSON_FILE = os.path.join(BASE_DIR, "latest_articles.json")
 
 # --- 設定情報 ---
 USER_ID = "cyanobi.2.29@gmail.com"
@@ -24,21 +30,61 @@ CATEGORIES = {
     "漫画": "https://www.seikyoonline.com/comic/",
     "デジタル特集": "https://www.seikyoonline.com/digital/",
     "ユース特集": "https://www.seikyoonline.com/youth/",
-    "大白蓮華": "https://www.seikyoonline.com/add_contents/daibyakurenge/"
-}
+} 
 
 now = datetime.now()
 TARGET_DATE = f"{now.year}年{now.month}月{now.day}日"
+FILE_DATE = now.strftime("%Y%m%d")
 
-async def scrape_category(page, category_name, url, fg):
+# 全ての取得データを保持するリスト
+all_scraped_data = []
+
+async def fetch_article_body(browser_context, url):
+    """記事詳細ページから本文を抽出する"""
+    detail_page = await browser_context.new_page()
+    body_text = ""
+    try:
+        # ネットワークが安定するまで待機
+        await detail_page.goto(url, wait_until="networkidle", timeout=30000)
+        # JSによる動的生成を待つ
+        await asyncio.sleep(2)
+        
+        # 提示されたHTML構造に基づき、p.rubyno を確実に取得
+        selectors = [
+            "p.rubyno",
+            "div.phase2_outer p",
+            "div.article-content-text p",
+            "div.article-content p",
+            ".shosai-text p"
+        ]
+        
+        texts = []
+        for selector in selectors:
+            elements = await detail_page.query_selector_all(selector)
+            if elements:
+                for el in elements:
+                    t = await el.inner_text()
+                    if t.strip() and t.strip() not in texts:
+                        if len(t.strip()) > 5:
+                            texts.append(t.strip())
+                if texts: break
+
+        body_text = "\n\n".join(texts)
+        
+    except Exception as e:
+        print(f"    ⚠️ 本文取得失敗 ({url}): {e}")
+    finally:
+        await detail_page.close()
+    return body_text
+
+async def scrape_category(context, category_name, url, fg):
+    page = await context.new_page()
     print(f"📂 [巡回] {category_name} にアクセス中...")
     try:
         await page.goto(url, wait_until="networkidle", timeout=45000)
-        # 画像読み込みのため少しスクロール
         await page.evaluate("window.scrollBy(0, 1000)")
         await asyncio.sleep(3) 
 
-        # 取得対象のセレクタを広めに設定
         blocks = await page.query_selector_all("div.p2o_text, div.p2o_text_photo, div.news_list_block, div.daibyakurenge_list_block, .article-item, .list_item")
 
         local_count = 0
@@ -53,10 +99,10 @@ async def scrape_category(page, category_name, url, fg):
 
             title_el = await block.query_selector(".under, h3, .shosai-title, .title")
             title = await title_el.inner_text() if title_el else "タイトル不明"
+            title = title.strip()
 
             img_el = await block.query_selector("img")
             final_img_url = None
-            
             if img_el:
                 src_url = None
                 for attr in ["data-src", "src", "data-original"]:
@@ -85,81 +131,129 @@ async def scrape_category(page, category_name, url, fg):
             full_url = f"https:{raw_href}" if raw_href.startswith("//") else raw_href
             if not full_url.startswith("http"): full_url = f"https://www.seikyoonline.com{raw_href}"
 
+            print(f"   📖 本文抽出中: {title[:15]}...")
+            article_body = await fetch_article_body(context, full_url)
+            
+            # --- RSSフィード用エントリ追加 (本文がなくてもRSSには追加) ---
+            summary = "\n".join(article_body.split("\n")[:10])
+
             fe = fg.add_entry()
-            fe.title(f"[{category_name}] {title.strip()}")
+            fe.title(f"[{category_name}] {title}")
             fe.link(href=full_url)
             fe.id(full_url)
             
-            desc_text = f"カテゴリ: {category_name} / 公開日: {date_text.strip()}"
+            desc_html = f"カテゴリ: {category_name} / 公開日: {date_text.strip()}<br><br>"
             if final_img_url:
-                fe.description(f'<img src="{final_img_url}" style="max-width:100%;"><br>{desc_text}')
-                fe.enclosure(final_img_url, 0, 'image/jpeg')
-            else:
-                fe.description(desc_text)
+                desc_html = f'<img src="{final_img_url}" style="max-width:100%;"><br>' + desc_html
             
+            if summary:
+                desc_html += f"<b>【記事概要】</b><br>{summary.replace(chr(10), '<br>')}"
+            
+            fe.description(desc_html)
+            if final_img_url:
+                fe.enclosure(final_img_url, 0, 'image/jpeg')
+            
+            # 全データをリストに蓄積 (後でインジェスト用にフィルタリング)
+            all_scraped_data.append({
+                "title": title,
+                "category": category_name,
+                "url": full_url,
+                "body": article_body,
+                "date": date_text.strip(),
+                "scraped_at": datetime.now().isoformat()
+            })
+
             local_count += 1
-            print(f"  [+] {title.strip()[:15]}... {'📸' if final_img_url else '📄'}")
+            print(f"  [+] 取得: {title[:15]}...")
 
         return local_count
     except Exception as e:
         print(f"  ⚠️ {category_name} エラー: {e}")
         return 0
+    finally:
+        await page.close()
 
 async def main():
     if os.path.exists(IMAGE_DIR):
         shutil.rmtree(IMAGE_DIR)
     os.makedirs(IMAGE_DIR, exist_ok=True)
+    os.makedirs(INGEST_DIR, exist_ok=True) 
 
     async with async_playwright() as p:
         print(f"\n🚀 [1/5] ブラウザ起動...")
         browser = await p.chromium.launch(headless=True)
-        # 言語とエージェントを設定
         context = await browser.new_context(
             viewport={'width': 1280, 'height': 1200},
             locale="ja-JP",
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        # ★ここが抜けていました！
+        
         page = await context.new_page()
 
         try:
-            print(f"🔑 [2/5] ログイン実行中...")
-            await page.goto("https://www.seikyoonline.com/auth/login", wait_until="networkidle")
-            await page.fill("input[placeholder*='SOKA ID']", USER_ID)
-            await page.fill("input[placeholder*='パスワード']", PASSWORD)
-            await page.click("button:has-text('ログイン')")
+            print(f"🔍 [2/5] ログイン状態の確認...")
+            login_url = "https://www.seikyoonline.com/auth/login"
+            await page.goto(login_url, wait_until="networkidle")
             
-	    # --- ここから修正・強化 ---
-            print("⏳ ログイン処理完了を待機中...")
-            # 1. ネットワークが静かになるまで待つ
-            await page.wait_for_load_state("networkidle")
-            # 2. 念のため、ログイン後のトップページにある特定の要素が出るまで待つ
-            # （例: ログアウトボタンや、ユーザー名が表示される場所など）
-            await asyncio.sleep(5) 
-            
-            # ログインが成功したか、スクリーンショットを撮って確認する（デバッグ用）
-            # await page.screenshot(path="debug_after_login.png")
-            # --- ここまで ---
-            
+            login_input_selector = "input[placeholder*='SOKA ID'], input[type='text'], input#username"
+            login_needed = await page.query_selector(login_input_selector)
+
+            if login_needed:
+                print(f"🔑 ログイン画面を検知。実行中...")
+                await page.fill(login_input_selector, USER_ID)
+                await page.fill("input[placeholder*='パスワード'], input[type='password'], input#password", PASSWORD)
+                
+                login_button = await page.query_selector("button:has-text('ログイン'), input[type='submit'], .loginButton")
+                if login_button:
+                    await login_button.click()
+                    print("⏳ ログイン処理完了を待機中...")
+                    await asyncio.sleep(5)
+                else:
+                    print("⚠️ ログインボタンが見つかりません。")
+            else:
+                print("✅ 自動ログイン済み。ログイン工程を省略します。")
+
             fg = FeedGenerator()
             fg.title(f"聖教新聞 本日のニュース")
-            # GitHubではなく、FunnelのURLにする（もしFunnelが開通していれば）
-            fg.link(href="https://[おびさんのFunnelドメイン]/")
+            fg.link(href=GITHUB_BASE_URL)
             fg.description(f"{TARGET_DATE} 総合RSSフィード")
-            # 言語設定を追加（Feedlyが解析しやすくなります）
             fg.language('ja')
 
             print(f"🔄 [3/5] カテゴリ巡回（ターゲット: {TARGET_DATE}）")
             total_count = 0
             for name, url in CATEGORIES.items():
-                total_count += await scrape_category(page, name, url, fg)
+                total_count += await scrape_category(context, name, url, fg)
 
             print(f"\n📊 [4/5] 収集完了: {total_count} 件")
 
             if total_count > 0:
-                print(f"💾 [5/5] RSS保存...")
+                print(f"💾 [5/5] 各種保存処理...")
+                
+                # 1. RSS保存 (全ての記事を保持)
                 fg.rss_file(RSS_FILE)
-                print(f"✨ 完了: images/ と {RSS_FILE} を更新しました。")
+                
+                # --- インジェスト用データのフィルタリング (本文があるものだけ抽出) ---
+                ingest_data_list = [item for item in all_scraped_data if item['body'].strip()]
+                
+                # 2. Ingest用JSON書き出し
+                with open(JSON_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(ingest_data_list, f, ensure_ascii=False, indent=4)
+                
+                # 3. Ingest用テキストファイルの出力 (本文があるもののみ)
+                ingest_txt_path = os.path.join(INGEST_DIR, f"{FILE_DATE}_seikyo_ingest.txt")
+                with open(ingest_txt_path, 'w', encoding='utf-8') as f:
+                    for item in ingest_data_list:
+                        f.write(f"--- ARTICLE_START ---\n")
+                        f.write(f"TITLE: {item['title']}\n")
+                        f.write(f"DATE: {item['date']}\n")
+                        f.write(f"CATEGORY: {item['category']}\n")
+                        f.write(f"URL: {item['url']}\n")
+                        f.write(f"--- BODY ---\n")
+                        f.write(f"{item['body']}\n")
+                        f.write(f"--- ARTICLE_END ---\n\n")
+
+                print(f"✨ 完了: RSS(全記事), JSON/TXT(本文あり記事のみ) を更新しました。")
+                print(f"📂 インジェスト対象外(本文なし): {total_count - len(ingest_data_list)} 件")
             else:
                 print("⚠️ 本日の記事がないため更新スキップ。")
 
