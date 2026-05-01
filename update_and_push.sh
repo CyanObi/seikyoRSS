@@ -1,22 +1,20 @@
 #!/bin/bash
-# update_and_push.sh
+# ---------------------------------------------------------
+# Seikyo RSS - Pure GitHub Sync Script
+# ---------------------------------------------------------
 
-# 1. 確実に作業ディレクトリへ移動
-cd /home/yoshikazu-obikawa/dev/seikyoRSS
+# 1. 実行ディレクトリの確定
+cd /home/yoshikazu-obikawa/dev/seikyo_backup
 
-# 2. 仮想環境の有効化（パスは環境に合わせてください）
+# 2. 仮想環境の有効化
 source .venv/bin/activate
 
-# 3. スクレイピング実行
+# 3. 取得実行（ここで 15 items 取得される！）
 python3 seikyo_scraper.py
 
-# 4. Webサーバ（直送用）へのコピーも残しておくと便利です
-cp seikyo_news.xml /var/www/html/seikyo_news.xml
-
-# 5. GitHubへ送信
-# gitコマンドもフルパス（/usr/bin/git）で書くとcronでより確実です
+# 4. GitHubへ最新の状態をプッシュ
 /usr/bin/git add .
 /usr/bin/git commit -m "Auto update: $(date +'%Y-%m-%d %H:%M')"
 /usr/bin/git push origin main
 
-echo "更新とGitHubへの送信が完了しました。"
+echo "✅ 取得完了。GitHubへの反映も成功しました。"
